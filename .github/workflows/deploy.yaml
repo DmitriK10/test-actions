@@ -68,8 +68,8 @@ jobs:
 
           script: |
             # Остановить и удалить старый контейнер, если существует
-            docker stop my-fastapi-app || true
-            docker rm my-fastapi-app || true
+            docker stop fastapi-app || true
+            docker rm fastapi-app || true
 
             # Логинимся в GHCR (используем GitHub токен)
             echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -79,7 +79,7 @@ jobs:
             docker pull $IMAGE_FULL
 
             # Запускаем новый контейнер
-            docker run -d --name my-fastapi-app -p 8000:8000 --restart unless-stopped $IMAGE_FULL
+            docker run -d --name fastapi-app -p 8000:8000 --restart unless-stopped $IMAGE_FULL
 
             # Очистка неиспользуемых образов
             docker image prune -f
