@@ -105,14 +105,16 @@ jobs:
           ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null && echo "ключ читается"
 
           SSH_PORT="${PORT:-22}"
-          ssh-keyscan -p "$SSH_PORT" -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          echo "known_hosts строк: $(wc -l < ~/.ssh/known_hosts)"
 
-          # На стороне сервера ключу разрешена единственная команда — deploy.sh.
-          # Поэтому произвольный код по этому ключу выполнить нельзя.
+          # ssh-keyscan здесь не используется: на части версий OpenSSH он падает
+          # на KEX-методе sntrup761x25519 и не отдаёт ключ хоста, из-за чего
+          # StrictHostKeyChecking=yes потом ругается «Host key verification failed».
+          # accept-new доверяет ключу при первом подключении и запоминает его;
+          # для одноразового раннера это эквивалентно TOFU и MITM не пропускает
+          # после первого контакта. Ключ к тому же ограничен одной командой.
           ssh -i ~/.ssh/deploy_key \
               -p "$SSH_PORT" \
-              -o StrictHostKeyChecking=yes \
+              -o StrictHostKeyChecking=accept-new \
               -o IdentitiesOnly=yes \
               -o ConnectTimeout=15 \
               -o BatchMode=yes \
