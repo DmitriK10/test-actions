@@ -100,19 +100,33 @@ jobs:
         run: |
           mkdir -p ~/.ssh
 
-          # Нормализация ключа: при вставке в поле секрета переводы строк иногда
-          # превращаются в литеральные \n, и ssh-keygen ругается «invalid format».
-          # Заменяем их на настоящие и гарантируем перевод строки в конце.
-          printf '%s' "$SSH_KEY" | sed 's/\\n/\n/g' > ~/.ssh/deploy_key
+          # Нормализация ключа. Три вещи ломают ключ при вставке в поле секрета:
+          # литеральные \n вместо переводов строк, CRLF из Windows и пробелы по краям.
+          printf '%s' "$SSH_KEY" \
+            | sed 's/\\n/\n/g' \
+            | tr -d '\r' \
+            | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+            > ~/.ssh/deploy_key
           [ -n "$(tail -c1 ~/.ssh/deploy_key)" ] && echo >> ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
+          echo "строк в ключе: $(wc -l < ~/.ssh/deploy_key)"
+          echo "первая строка: $(head -1 ~/.ssh/deploy_key | cut -c1-45)"
+          echo "последняя строка: $(tail -1 ~/.ssh/deploy_key | cut -c1-45)"
+
           if ! ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null 2>&1; then
-            echo "::error::SSH_KEY не читается как приватный ключ. Первая строка: $(head -1 ~/.ssh/deploy_key | cut -c1-40)"
-            echo "Строк в ключе: $(wc -l < ~/.ssh/deploy_key)"
+            echo "::error::SSH_KEY не читается как приватный ключ"
+            ssh-keygen -y -f ~/.ssh/deploy_key 2>&1 | head -3
             exit 1
           fi
-          echo "ключ прочитан, отпечаток: $(ssh-keygen -lf ~/.ssh/deploy_key | awk '{print $2}')"
+
+          FP=$(ssh-keygen -lf ~/.ssh/deploy_key | awk '{print $2}')
+          echo "отпечаток ключа: $FP"
+          echo "ожидается:       SHA256:pmJCRJURdpXJGAivahaz/L39irOh/KceypBaBkzCNV8"
+          if [ "$FP" != "SHA256:pmJCRJURdpXJGAivahaz/L39irOh/KceypBaBkzCNV8" ]; then
+            echo "::error::В секрете SSH_KEY лежит не тот ключ, который прописан на сервере"
+            exit 1
+          fi
 
           SSH_PORT="${PORT:-22}"
 
@@ -128,4 +142,5 @@ jobs:
               -o IdentitiesOnly=yes \
               -o ConnectTimeout=15 \
               -o BatchMode=yes \
+              -o LogLevel=VERBOSE \
               "$USERNAME@$HOST"
