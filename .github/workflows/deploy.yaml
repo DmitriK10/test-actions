@@ -107,12 +107,18 @@ jobs:
             | tr -d '\r' \
             | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
             > ~/.ssh/deploy_key
-          [ -n "$(tail -c1 ~/.ssh/deploy_key)" ] && echo >> ~/.ssh/deploy_key
+
+          # Не через `[ ... ] && echo`: при set -e неудачная проверка роняет шаг
+          # без сообщения. Обычный if безопасен.
+          if [ -n "$(tail -c1 ~/.ssh/deploy_key)" ]; then
+            echo >> ~/.ssh/deploy_key
+          fi
           chmod 600 ~/.ssh/deploy_key
 
           echo "строк в ключе: $(wc -l < ~/.ssh/deploy_key)"
           echo "первая строка: $(head -1 ~/.ssh/deploy_key | cut -c1-45)"
           echo "последняя строка: $(tail -1 ~/.ssh/deploy_key | cut -c1-45)"
+          echo "пользователь: '$USERNAME'  хост: '$HOST'  порт: '${PORT:-22}'"
 
           if ! ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null 2>&1; then
             echo "::error::SSH_KEY не читается как приватный ключ"
@@ -125,6 +131,11 @@ jobs:
           echo "ожидается:       SHA256:pmJCRJURdpXJGAivahaz/L39irOh/KceypBaBkzCNV8"
           if [ "$FP" != "SHA256:pmJCRJURdpXJGAivahaz/L39irOh/KceypBaBkzCNV8" ]; then
             echo "::error::В секрете SSH_KEY лежит не тот ключ, который прописан на сервере"
+            exit 1
+          fi
+
+          if [ "$USERNAME" != "deploy" ]; then
+            echo "::error::USERNAME должен быть deploy, а не '$USERNAME'. Ключ прописан только для deploy."
             exit 1
           fi
 
