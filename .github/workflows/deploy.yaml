@@ -1,85 +1,84 @@
-name: CI/CD Build and Deploy
+name: CI/CD — проверка и деплой
 
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}   # будет выглядеть как ghcr.io/username/repo
+  workflow_dispatch:        # ручной запуск из вкладки Actions
 
 jobs:
-  # ========== JOB 1: СБОРКА И ПУБЛИКАЦИЯ ОБРАЗА ==========
-  build:
+  # ========== JOB 1: ПРОВЕРКА ==========
+  # Собираем образ и проверяем, что сервис действительно отвечает.
+  # Если этот джоб упал, деплой не начнётся.
+  test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write   # необходимо для push в GHCR
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Build image
+        run: docker build -t time-server:ci .
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run container
+        run: docker run -d --name api-ci -p 8000:8000 time-server:ci
 
-      - name: Extract metadata (tags, labels)
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha,prefix=,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Wait for service
+        run: |
+          for i in $(seq 1 20); do
+            if curl -sf http://localhost:8000/time >/dev/null; then
+              echo "сервис поднялся за ${i} с"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "сервис не ответил за 20 с"
+          docker logs api-ci
+          exit 1
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Smoke test endpoints
+        run: |
+          set -e
+          curl -sf http://localhost:8000/ | grep -q "Добро пожаловать"
+          curl -sf http://localhost:8000/time | grep -q utc_time
+          curl -sf http://localhost:8000/date | grep -q utc_date
+          curl -sf http://localhost:8000/datetime | grep -q utc_datetime
 
-  # ========== JOB 2: ДЕПЛОЙ НА СЕРВЕР ЧЕРЕЗ SSH ==========
+          # Конвертация часовых поясов: 12:00 MSK = 04:00 EST (зимой разница 8 часов)
+          OUT=$(curl -sf "http://localhost:8000/convert?time_str=2026-11-10T12:00:00&from_tz=Europe/Moscow&to_tz=America/New_York")
+          echo "$OUT"
+          echo "$OUT" | grep -q "2026-11-10T04:00:00-05:00"
+
+          # Swagger и схема отдаются
+          curl -sf -o /dev/null http://localhost:8000/docs
+          curl -sf -o /dev/null http://localhost:8000/openapi.json
+
+          echo "все проверки пройдены"
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs api-ci || true
+
+  # ========== JOB 2: ДЕПЛОЙ ==========
+  # Выполняется только после успешной проверки и только для main.
+  # Собирает контейнер на сервере и проверяет его через nginx.
   deploy:
     runs-on: ubuntu-latest
-    needs: build                # деплой запускается только после успешной сборки
-    if: github.ref == 'refs/heads/main'   # деплоим только с main
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
 
     steps:
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.HOST }}
-          username: ${{ secrets.USERNAME }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.PORT }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.HOST }} >> ~/.ssh/known_hosts 2>/dev/null
 
-          script: |
-            # Остановить и удалить старый контейнер, если существует
-            docker stop fastapi-app || true
-            docker rm fastapi-app || true
-
-            # Логинимся в GHCR (используем GitHub токен)
-            echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-
-            # Скачиваем последний образ (тег latest)
-            IMAGE_FULL=${{ env.REGISTRY }}/${{ github.repository }}:latest
-            docker pull $IMAGE_FULL
-
-            # Запускаем новый контейнер
-            docker run -d --name fastapi-app -p 8000:8000 --restart unless-stopped $IMAGE_FULL
-
-            # Очистка неиспользуемых образов
-            docker image prune -f
+          # На стороне сервера ключу разрешена единственная команда — deploy.sh.
+          # Поэтому произвольный код по этому ключу выполнить нельзя.
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=yes \
+              -o ConnectTimeout=15 \
+              ${{ secrets.USERNAME }}@${{ secrets.HOST }}
