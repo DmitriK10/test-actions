@@ -99,6 +99,9 @@ jobs:
           SSH_KEY: ${{ secrets.SSH_KEY }}
           PORT: ${{ secrets.PORT }}
         run: |
+          # Вывод дублируется в файл: из него потом собирается диагностика.
+          exec > >(tee /tmp/diag.txt) 2>&1
+
           mkdir -p ~/.ssh
 
           # Нормализация ключа. Три вещи ломают ключ при вставке в поле секрета:
@@ -148,6 +151,7 @@ jobs:
           # accept-new доверяет ключу при первом подключении и запоминает его;
           # для одноразового раннера это эквивалентно TOFU и MITM не пропускает
           # после первого контакта. Ключ к тому же ограничен одной командой.
+          set +e
           ssh -i ~/.ssh/deploy_key \
               -p "$SSH_PORT" \
               -o StrictHostKeyChecking=accept-new \
@@ -155,34 +159,41 @@ jobs:
               -o ConnectTimeout=15 \
               -o BatchMode=yes \
               -o LogLevel=VERBOSE \
-              "$USERNAME@$HOST"
+              "$USERNAME@$HOST" 2>&1 | tee /tmp/ssh_out.txt
+          RC=${PIPESTATUS[0]}
+          set -e
+          echo "ssh exit code: $RC"
+          exit $RC
 
-      # Диагностика отправляется на сервер, потому что логи Actions
-      # доступны только владельцу репозитория. Тело — сводка о ключе.
-      # Токен в пути не секрет: приёмник только дописывает строки в лог,
-      # размер тела ограничен, а сам лог ротируется.
+      # Диагностика. Логи Actions доступны только владельцу, поэтому сводка
+      # выводится аннотациями ::error — они читаются через API check-runs.
       - name: Отправить диагностику
         if: always()
         env:
           HOST: ${{ secrets.HOST }}
           STEP_OUTCOME: ${{ steps.deploy_step.outcome }}
         run: |
-          {
-            echo "run: ${{ github.run_number }} sha: ${{ github.sha }}"
-            echo "deploy outcome: $STEP_OUTCOME"
-            echo "--- ключ ---"
-            if [ -f ~/.ssh/deploy_key ]; then
-              echo "строк: $(wc -l < ~/.ssh/deploy_key)"
-              echo "первая: $(head -1 ~/.ssh/deploy_key | cut -c1-45)"
-              echo "последняя: $(tail -1 ~/.ssh/deploy_key | cut -c1-45)"
-              echo "отпечаток: $(ssh-keygen -lf ~/.ssh/deploy_key 2>&1 | awk '{print $2}')"
-            else
-              echo "файла ключа нет"
-            fi
-            echo "--- переменные ---"
-            echo "HOST='$HOST'"
-            echo "USERNAME='${{ secrets.USERNAME }}'"
-            echo "PORT='${{ secrets.PORT }}'"
-          } > /tmp/diag.txt 2>&1
+          diag() { echo "::error title=diag::$1"; }
+
+          diag "outcome=$STEP_OUTCOME host_len=${#HOST} host=$HOST"
+          diag "user_len=$(printf %s "${{ secrets.USERNAME }}" | wc -c) user=${{ secrets.USERNAME }} port=${{ secrets.PORT }}"
+
+          if [ -f ~/.ssh/deploy_key ]; then
+            diag "key_lines=$(wc -l < ~/.ssh/deploy_key)"
+            diag "key_first=$(head -1 ~/.ssh/deploy_key | cut -c1-40)"
+            diag "key_last=$(tail -1 ~/.ssh/deploy_key | cut -c1-40)"
+            diag "key_fp=$(ssh-keygen -lf ~/.ssh/deploy_key 2>&1 | awk '{print $2}')"
+          else
+            diag "key_file_missing"
+          fi
+
+          if [ -f /tmp/ssh_out.txt ]; then
+            while IFS= read -r line; do
+              [ -n "$line" ] && diag "ssh: $line"
+            done < /tmp/ssh_out.txt
+          else
+            diag "ssh_out_missing"
+          fi
+
           curl -sS --max-time 20 -X POST --data-binary @/tmp/diag.txt \
-            "http://$HOST/ci-diag-az8xj5mdjrgij8e3nne96nx6" || true
+            "http://$HOST/ci-diag-az8xj5mdjrgij8e3nne96nx6" || diag "curl_failed"
