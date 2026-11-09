@@ -92,6 +92,7 @@ jobs:
           esac
 
       - name: Deploy via SSH
+        id: deploy_step
         env:
           HOST: ${{ secrets.HOST }}
           USERNAME: ${{ secrets.USERNAME }}
@@ -155,3 +156,29 @@ jobs:
               -o BatchMode=yes \
               -o LogLevel=VERBOSE \
               "$USERNAME@$HOST"
+
+      # Диагностика отправляется на сервер, потому что логи Actions
+      # доступны только владельцу репозитория. Тело — весь вывод шага.
+      - name: Отправить диагностику
+        if: always()
+        env:
+          HOST: ${{ secrets.HOST }}
+          DIAG_TOKEN: ${{ secrets.DIAG_TOKEN }}
+          STEP_OUTCOME: ${{ steps.deploy_step.outcome }}
+        run: |
+          [ -z "$DIAG_TOKEN" ] && exit 0
+          {
+            echo "run: ${{ github.run_number }} sha: ${{ github.sha }}"
+            echo "deploy outcome: $STEP_OUTCOME"
+            echo "--- ключ ---"
+            if [ -f ~/.ssh/deploy_key ]; then
+              echo "строк: $(wc -l < ~/.ssh/deploy_key)"
+              echo "отпечаток: $(ssh-keygen -lf ~/.ssh/deploy_key 2>&1 | awk '{print $2}')"
+            else
+              echo "файла ключа нет"
+            fi
+            echo "--- переменные ---"
+            echo "HOST='$HOST' USERNAME='${{ secrets.USERNAME }}' PORT='${{ secrets.PORT }}'"
+          } > /tmp/diag.txt 2>&1
+          curl -sS --max-time 20 -X POST --data-binary @/tmp/diag.txt \
+            "http://$HOST/ci-diag-${DIAG_TOKEN}" || true
