@@ -1,0 +1,32 @@
+services:
+  api:
+    build: .
+    image: time-server:latest
+    container_name: fastapi-app
+    restart: unless-stopped
+
+    # Порт только на localhost: наружу выходит nginx, у него UFW и заголовки.
+    # Публиковать 0.0.0.0:8000 нельзя — это обход прокси.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+    # --root-path обязателен: nginx отдаёт сервис по /api/time/ и срезает префикс.
+    # Без него /docs открывается, но ссылается на /openapi.json в корне, где 404.
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --root-path /api/time
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/time', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
