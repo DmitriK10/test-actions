@@ -69,16 +69,51 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
 
     steps:
+      - name: Проверка секретов
+        env:
+          HOST: ${{ secrets.HOST }}
+          USERNAME: ${{ secrets.USERNAME }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          PORT: ${{ secrets.PORT }}
+        run: |
+          # Печатаем только длины: значения секретов в лог не попадают.
+          echo "HOST: ${#HOST} символов"
+          echo "USERNAME: ${#USERNAME} символов"
+          echo "SSH_KEY: ${#SSH_KEY} символов"
+          echo "PORT: ${#PORT} символов"
+
+          [ -z "$HOST" ] && { echo "::error::секрет HOST не задан"; exit 1; }
+          [ -z "$USERNAME" ] && { echo "::error::секрет USERNAME не задан"; exit 1; }
+          [ -z "$SSH_KEY" ] && { echo "::error::секрет SSH_KEY не задан"; exit 1; }
+
+          case "$SSH_KEY" in
+            *"BEGIN OPENSSH PRIVATE KEY"*) echo "ключ похож на OpenSSH" ;;
+            *) echo "::error::SSH_KEY не похож на приватный ключ OpenSSH"; exit 1 ;;
+          esac
+
       - name: Deploy via SSH
+        env:
+          HOST: ${{ secrets.HOST }}
+          USERNAME: ${{ secrets.USERNAME }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          PORT: ${{ secrets.PORT }}
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ secrets.HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+          ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null && echo "ключ читается"
+
+          SSH_PORT="${PORT:-22}"
+          ssh-keyscan -p "$SSH_PORT" -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          echo "known_hosts строк: $(wc -l < ~/.ssh/known_hosts)"
 
           # На стороне сервера ключу разрешена единственная команда — deploy.sh.
           # Поэтому произвольный код по этому ключу выполнить нельзя.
           ssh -i ~/.ssh/deploy_key \
+              -p "$SSH_PORT" \
               -o StrictHostKeyChecking=yes \
+              -o IdentitiesOnly=yes \
               -o ConnectTimeout=15 \
-              ${{ secrets.USERNAME }}@${{ secrets.HOST }}
+              -o BatchMode=yes \
+              "$USERNAME@$HOST"
