@@ -99,10 +99,20 @@ jobs:
           PORT: ${{ secrets.PORT }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+
+          # Нормализация ключа: при вставке в поле секрета переводы строк иногда
+          # превращаются в литеральные \n, и ssh-keygen ругается «invalid format».
+          # Заменяем их на настоящие и гарантируем перевод строки в конце.
+          printf '%s' "$SSH_KEY" | sed 's/\\n/\n/g' > ~/.ssh/deploy_key
+          [ -n "$(tail -c1 ~/.ssh/deploy_key)" ] && echo >> ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-          ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null && echo "ключ читается"
+          if ! ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null 2>&1; then
+            echo "::error::SSH_KEY не читается как приватный ключ. Первая строка: $(head -1 ~/.ssh/deploy_key | cut -c1-40)"
+            echo "Строк в ключе: $(wc -l < ~/.ssh/deploy_key)"
+            exit 1
+          fi
+          echo "ключ прочитан, отпечаток: $(ssh-keygen -lf ~/.ssh/deploy_key | awk '{print $2}')"
 
           SSH_PORT="${PORT:-22}"
 
