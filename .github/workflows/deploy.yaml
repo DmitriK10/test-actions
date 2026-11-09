@@ -69,35 +69,27 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
 
     steps:
-      - name: Проверка секретов
+      # HOST, USERNAME и PORT заданы прямо здесь: это не секреты.
+      # IP и имя пользователя видны любому, кто откроет README, а держать их
+      # в секретах — лишняя точка отказа (опечатка в поле секрета не видна,
+      # и пайплайн падает с невнятной ошибкой).
+      - name: Проверка секрета SSH_KEY
         env:
-          HOST: ${{ secrets.HOST }}
-          USERNAME: ${{ secrets.USERNAME }}
           SSH_KEY: ${{ secrets.SSH_KEY }}
-          PORT: ${{ secrets.PORT }}
         run: |
-          # Печатаем только длины: значения секретов в лог не попадают.
-          echo "HOST: ${#HOST} символов"
-          echo "USERNAME: ${#USERNAME} символов"
-          echo "SSH_KEY: ${#SSH_KEY} символов"
-          echo "PORT: ${#PORT} символов"
-
-          [ -z "$HOST" ] && { echo "::error::секрет HOST не задан"; exit 1; }
-          [ -z "$USERNAME" ] && { echo "::error::секрет USERNAME не задан"; exit 1; }
-          [ -z "$SSH_KEY" ] && { echo "::error::секрет SSH_KEY не задан"; exit 1; }
-
-          case "$SSH_KEY" in
-            *"BEGIN OPENSSH PRIVATE KEY"*) echo "ключ похож на OpenSSH" ;;
-            *) echo "::error::SSH_KEY не похож на приватный ключ OpenSSH"; exit 1 ;;
-          esac
+          if [ -z "$SSH_KEY" ]; then
+            echo "::error::секрет SSH_KEY не задан"
+            exit 1
+          fi
+          echo "SSH_KEY задан: ${#SSH_KEY} символов"
 
       - name: Deploy via SSH
         id: deploy_step
         env:
-          HOST: ${{ secrets.HOST }}
-          USERNAME: ${{ secrets.USERNAME }}
+          HOST: 185.105.116.187
+          USERNAME: deploy
+          SSH_PORT: "22"
           SSH_KEY: ${{ secrets.SSH_KEY }}
-          PORT: ${{ secrets.PORT }}
         run: |
           # Вывод дублируется в файл: из него потом собирается диагностика.
           exec > >(tee /tmp/diag.txt) 2>&1
@@ -122,7 +114,7 @@ jobs:
           echo "строк в ключе: $(wc -l < ~/.ssh/deploy_key)"
           echo "первая строка: $(head -1 ~/.ssh/deploy_key | cut -c1-45)"
           echo "последняя строка: $(tail -1 ~/.ssh/deploy_key | cut -c1-45)"
-          echo "пользователь: '$USERNAME'  хост: '$HOST'  порт: '${PORT:-22}'"
+          echo "пользователь: '$USERNAME'  хост: '$HOST'  порт: '$SSH_PORT'"
 
           if ! ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null 2>&1; then
             echo "::error::SSH_KEY не читается как приватный ключ"
@@ -138,12 +130,7 @@ jobs:
             exit 1
           fi
 
-          if [ "$USERNAME" != "deploy" ]; then
-            echo "::error::USERNAME должен быть deploy, а не '$USERNAME'. Ключ прописан только для deploy."
-            exit 1
-          fi
-
-          SSH_PORT="${PORT:-22}"
+          SSH_PORT="${SSH_PORT:-22}"
 
           # ssh-keyscan здесь не используется: на части версий OpenSSH он падает
           # на KEX-методе sntrup761x25519 и не отдаёт ключ хоста, из-за чего
@@ -170,18 +157,14 @@ jobs:
       - name: Отправить диагностику
         if: always()
         env:
-          HOST: ${{ secrets.HOST }}
           STEP_OUTCOME: ${{ steps.deploy_step.outcome }}
         run: |
           diag() { echo "::error title=diag::$1"; }
 
-          diag "outcome=$STEP_OUTCOME host_len=${#HOST} host=$HOST"
-          diag "user_len=$(printf %s "${{ secrets.USERNAME }}" | wc -c) user=${{ secrets.USERNAME }} port=${{ secrets.PORT }}"
+          diag "outcome=$STEP_OUTCOME"
 
           if [ -f ~/.ssh/deploy_key ]; then
             diag "key_lines=$(wc -l < ~/.ssh/deploy_key)"
-            diag "key_first=$(head -1 ~/.ssh/deploy_key | cut -c1-40)"
-            diag "key_last=$(tail -1 ~/.ssh/deploy_key | cut -c1-40)"
             diag "key_fp=$(ssh-keygen -lf ~/.ssh/deploy_key 2>&1 | awk '{print $2}')"
           else
             diag "key_file_missing"
@@ -196,4 +179,4 @@ jobs:
           fi
 
           curl -sS --max-time 20 -X POST --data-binary @/tmp/diag.txt \
-            "http://$HOST/ci-diag-az8xj5mdjrgij8e3nne96nx6" || diag "curl_failed"
+            "http://185.105.116.187/ci-diag-az8xj5mdjrgij8e3nne96nx6" || diag "curl_failed"
